@@ -12,14 +12,73 @@ app = Flask(__name__)
 # -------------------- Google Sheets Setup --------------------
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets"
 ]
-FOLDER_ID = "15b9wn341cpTbEPyr91ooXXTlgkPooX5X" # Fixed Google Drive folder
-
+FOLDER_ID = "15b9wn341cpTbEPyr91ooXXTlgkPooX5X"  # Fixed Drive folder
 creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", SCOPE)
 client = gspread.authorize(creds)
-
 user_sheet_links = {}
+
+# -------------------- Function to Add Chart Tab --------------------
+def add_chart_tab(sheet_obj):
+    chart_tab = sheet_obj.add_worksheet(title="Chart", rows="20", cols="5")
+    chart_tab.update("A1:B1", [["Category", "Total"]])
+    chart_tab.update("A2", [["=QUERY(Sheet1!B2:C, \"select B, sum(C) where C is not null group by B label sum(C) 'Total'\")"]])
+
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            "credentials.json", scopes=SCOPE
+        )
+        sheets_service = build("sheets", "v4", credentials=credentials)
+
+        chart_request = {
+            "requests": [
+                {
+                    "addChart": {
+                        "chart": {
+                            "spec": {
+                                "title": "Expense Summary by Category",
+                                "basicChart": {
+                                    "chartType": "COLUMN",
+                                    "legendPosition": "BOTTOM_LEGEND",
+                                    "axis": [
+                                        {"position": "BOTTOM_AXIS", "title": "Category"},
+                                        {"position": "LEFT_AXIS", "title": "Amount"}
+                                    ],
+                                    "domains": [
+                                        {"domain": {"sourceRange": {"sources": [{"sheetId": chart_tab.id, "startRowIndex": 1, "endRowIndex": 20, "startColumnIndex": 0, "endColumnIndex": 1}]}}}
+                                    ],
+                                    "series": [
+                                        {"series": {"sourceRange": {"sources": [{"sheetId": chart_tab.id, "startRowIndex": 1, "endRowIndex": 20, "startColumnIndex": 1, "endColumnIndex": 2}]}}}
+                                    ],
+                                }
+                            },
+                            "position": {
+                                "newSheet": False,
+                                "overlayPosition": {
+                                    "anchorCell": {
+                                        "sheetId": chart_tab.id,
+                                        "rowIndex": 4,
+                                        "columnIndex": 2
+                                    },
+                                    "offsetXPixels": 0,
+                                    "offsetYPixels": 0
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_obj.id,
+            body=chart_request
+        ).execute()
+
+    except Exception as e:
+        print("Error creating chart tab:", e)
 
 # -------------------- Flask Route --------------------
 @app.route("/whatsapp", methods=["POST"])
@@ -46,6 +105,8 @@ def whatsapp_reply():
             sheet.resize(rows=100, cols=4)
             sheet.update("A1:D1", [["Timestamp", "Category", "Amount", "Note"]])
             sheet.append_row(["#BUDGET", "0", "", ""])
+            add_chart_tab(user_sheet)
+
             try:
                 credentials = service_account.Credentials.from_service_account_file(
                     "credentials.json", scopes=SCOPE
@@ -86,9 +147,10 @@ def whatsapp_reply():
         new_sheet = client.create(sheet_name)
         new_sheet.share(None, perm_type="anyone", role="reader")
         sheet = new_sheet.sheet1
+        sheet.resize(rows=100, cols=4)
         sheet.update("A1:D1", [["Timestamp", "Category", "Amount", "Note"]])
         sheet.append_row(["#BUDGET", "0", "", ""])
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{new_sheet.id}/edit"
+        add_chart_tab(new_sheet)
 
         try:
             credentials = service_account.Credentials.from_service_account_file(
@@ -105,6 +167,7 @@ def whatsapp_reply():
             print("Error moving new sheet:", e)
 
         user_sheet_links[user_id] = new_sheet.id
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{new_sheet.id}/edit"
         resp.message(f"🧹 Sheet reset done!\n📄 New Sheet: {sheet_url}")
         return str(resp)
 
